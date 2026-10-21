@@ -4,7 +4,7 @@ const clone = (x) => structuredClone(x);
 
 /** In-memory database for local development and tests ONLY (refused in production by config). Same interface as Firestore driver. */
 export class MemoryDb {
-  constructor() { this.users = new Map(); this.projects = new Map(); this.jobs = new Map(); }
+  constructor() { this.users = new Map(); this.projects = new Map(); this.jobs = new Map(); this.videos = new Map(); }
   async getUser(id) { return clone(this.users.get(id) ?? null); }
   async upsertUser(id, fields, createFields = {}) {
     const cur = this.users.get(id);
@@ -29,5 +29,10 @@ export class MemoryDb {
     const patch = mutator(clone(cur)); if (!patch) return clone(cur);
     const next = applyPatch(cur, patch); this.jobs.set(id, next); return clone(next);
   }
+  async createVideo(doc) { if (this.videos.has(doc.id)) throw new Error('exists'); this.videos.set(doc.id, clone(doc)); return clone(doc); }
+  async getVideo(id) { return clone(this.videos.get(id) ?? null); }
+  async listVideosByUser(userId) { return [...this.videos.values()].filter((v) => v.userId === userId).map(clone); }
+  async deleteVideo(id) { this.videos.delete(id); }
+  async listVideosExpiredBefore(ms) { return [...this.videos.values()].filter((v) => v.expiresAt <= ms).map(clone); }
   async listJobsByStatus(statuses) { return [...this.jobs.values()].filter((j) => statuses.includes(j.status)).map(clone); }
 }

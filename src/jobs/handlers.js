@@ -70,7 +70,7 @@ export function registerHandlers({ jobs, db, storage, ff, gemini, cfg, now = Dat
     try { plan = buildRenderPlan(p.sync, idByTag, p.duration.seconds); } catch (e) { throw new AppError(422, 'RENDER_PLAN_INVALID', e.message); }
     const outputId = newId('out');
     const warnings = []; let renderedFps = cfg.render.fps;
-    const outKey = `${projectKeyPrefix(p)}outputs/${outputId}.mp4`;
+    const outKey = `users/${p.userId}/videos/${outputId}.mp4`; // the user's video LIBRARY: outside the project folder, so project cleanup never deletes it
     const meta = await withTmp(async (dir) => {
       await quietMeta(job, { phase: 'preparing', progress: { renderedSeconds: 0, totalSeconds: p.duration.seconds, fps: cfg.render.fps } });
       const audioPath = path.join(dir, 'audio');
@@ -116,7 +116,14 @@ export function registerHandlers({ jobs, db, storage, ff, gemini, cfg, now = Dat
       return { outputDurationSeconds: info.duration, width: v.width, height: v.height, size: (await stat(outPath)).size };
     });
     if (Math.abs(meta.outputDurationSeconds - p.duration.seconds) > 1) warnings.push(`Output duration ${meta.outputDurationSeconds.toFixed(2)}s differs from the authoritative ${p.duration.seconds.toFixed(2)}s.`);
-    await jobs.finish(job, { render: { key: outKey, outputId, createdAt: now(), ...meta, authoritativeDurationSeconds: p.duration.seconds, fps: renderedFps, warnings } });
-    if (p.render?.key && p.render.key !== outKey) storage.delete(p.render.key).catch(() => {});
+    // Record the video in the library BEFORE finishing the task, so "finished" always means "stored and listed".
+    const first = p.batches[`b${p.batchOrder[0]}`]?.filename;
+    const created = now();
+    await db.createVideo({ id: outputId, userId: p.userId, projectId: p.id, key: outKey, title: (first ? first.replace(/\.[^.]+$/, '') : 'Video').slice(0, 80), createdAt: created, expiresAt: created + cfg.videos.retentionMs,
+      size: meta.size, durationSeconds: p.duration.seconds, width: meta.width, height: meta.height, fps: renderedFps }).catch(async (e) => { if (!(await db.getVideo(outputId))) throw e; });
+    await jobs.finish(job, { render: { key: outKey, outputId, videoId: outputId, createdAt: created, ...meta, authoritativeDurationSeconds: p.duration.seconds, fps: renderedFps, warnings } });
+    // keep the library bounded: oldest videos beyond the per-user limit are removed
+    const mine = (await db.listVideosByUser(p.userId)).sort((a, b) => b.createdAt - a.createdAt);
+    for (const old of mine.slice(cfg.videos.maxPerUser)) { await storage.delete(old.key).catch(() => {}); await db.deleteVideo(old.id).catch(() => {}); }
   });
 }

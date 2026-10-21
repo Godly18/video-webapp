@@ -1,6 +1,15 @@
 import fs from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
+import { presignGetUrl } from '../lib/sigv4.js';
+
+/** Short-lived direct-download URL: the browser fetches from Cloudflare, not through this server. Bucket stays private. */
+export function makePresigner(cfg) {
+  return (key, { filename, contentType, expiresSeconds = 600 } = {}) => presignGetUrl({
+    endpoint: cfg.r2.endpoint, bucket: cfg.r2.bucket, key, accessKeyId: cfg.r2.accessKeyId, secretAccessKey: cfg.r2.secretAccessKey, region: 'auto', expiresSeconds,
+    query: { ...(filename ? { 'response-content-disposition': `attachment; filename="${String(filename).replace(/["\\\r\n]/g, '_')}"` } : {}), ...(contentType ? { 'response-content-type': contentType } : {}) },
+  });
+}
 
 /** Cloudflare R2 via the S3-compatible API. Keep the bucket PRIVATE; media is streamed through the server. */
 export async function createR2Storage(cfg) {
@@ -13,6 +22,7 @@ export async function createR2Storage(cfg) {
   });
   const get = (Key) => s3.send(new GetObjectCommand({ Bucket, Key }));
   const api = {
+    presignGet: async (key, opts) => makePresigner(cfg)(key, opts),
     async putFile(key, filePath, { contentType } = {}) {
       const { size } = await stat(filePath);
       await s3.send(new PutObjectCommand({ Bucket, Key: key, Body: fs.createReadStream(filePath), ContentLength: size, ContentType: contentType }));

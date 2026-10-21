@@ -54,6 +54,11 @@ export async function createFirestoreDb(cfg) {
     async getJob(id) { return data(await fs.collection('jobs').doc(id).get()); },
     async createJob(doc) { await fs.collection('jobs').doc(doc.id).create(doc); return doc; },
     updateJob: (id, mutator) => txUpdate('jobs', id, mutator, new AppError(404, 'JOB_NOT_FOUND', 'Job not found.')),
+    async createVideo(doc) { await fs.collection('videos').doc(doc.id).create(doc); return doc; },
+    async getVideo(id) { return data(await fs.collection('videos').doc(id).get()); },
+    async listVideosByUser(userId) { return (await fs.collection('videos').where('userId', '==', userId).limit(200).get()).docs.map((d) => d.data()); },
+    async deleteVideo(id) { await fs.collection('videos').doc(id).delete(); },
+    async listVideosExpiredBefore(ms) { return (await fs.collection('videos').where('expiresAt', '<=', ms).limit(200).get()).docs.map((d) => d.data()); },
     async listJobsByStatus(statuses) { return (await fs.collection('jobs').where('status', 'in', statuses).limit(500).get()).docs.map((d) => d.data()); },
   };
 }

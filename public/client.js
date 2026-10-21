@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (s) => { if (!Number.isFinite(s)) return '–'; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${x.toFixed(2).padStart(5, '0')}`; };
 const CLIENT_BUILD = new URL(import.meta.url).searchParams.get('v') || 'unknown';
-let audioFmt = null, email = sessionStorage.getItem('email') || '', draft = '', project = null, busy = false, notice = null, pending = {}, thumbs = {}, sig = '';
+let showVideos = false, videos = null, videosRetention = 7, audioFmt = null, email = sessionStorage.getItem('email') || '', draft = '', project = null, busy = false, notice = null, pending = {}, thumbs = {}, sig = '';
 
 async function api(method, path, { body, raw, headers = {}, blob, onProgress } = {}) {
   const url = path;
@@ -54,9 +54,9 @@ addEventListener('pagehide', () => { if (project && email) navigator.sendBeacon(
 function show() {
   sig = project ? JSON.stringify([project.task, project.taskMeta, project.duration, project.sync?.computedAt, project.render?.outputId]) : '';
   const nav = $('#nav'), app = $('#app');
-  nav.innerHTML = email ? `<span class="mut">${esc(email)}</span> <button data-a="exit">Exit</button>` : '';
+  nav.innerHTML = email ? `<span class="mut">${esc(email)}</span> <button data-a="videos">Videos</button> <button data-a="exit">Exit</button>` : '';
   const n = notice ? `<div class="msg ${notice.t}">${esc(notice.m)}</div>` : '';
-  if (!email) app.innerHTML = n + identifyView(); else if (!project) app.innerHTML = n + startView(); else app.innerHTML = n + stepsView() + ({ audio: audioView, batches: batchesView, images: imagesView, review: reviewView, export: exportView }[project.stage] || audioView)();
+  if (!email) app.innerHTML = n + identifyView(); else if (showVideos) app.innerHTML = n + videosView(); else if (!project) app.innerHTML = n + startView(); else app.innerHTML = n + stepsView() + ({ audio: audioView, batches: batchesView, images: imagesView, review: reviewView, export: exportView }[project.stage] || audioView)();
   notice = null; hydrateThumbs();
 }
 const stepsView = () => `<div class="steps">${STAGES.map(([k, l]) => `<span class="${k === project.stage ? 'on' : ''}">${l}</span>`).join('')}</div>
@@ -169,6 +169,29 @@ function exportView() {
   return `<div class="card"><h2>Export</h2>${body}${batchAudioView()}<hr><button data-a="newOther">Start a new project</button></div>`;
 }
 
+// ---------- Videos library ----------
+const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
+function videosView() {
+  const rendering = project?.task?.videoRendering === 'pending';
+  const rows = (videos || []).map((v) => `<tr><td><b>${esc(v.title)}</b><br><span class="mut">${new Date(v.createdAt).toLocaleString()}</span></td><td>${fmt(v.durationSeconds)}</td><td>${mb(v.size)}<br><span class="mut">${v.width}×${v.height} @ ${v.fps} fps</span></td><td class="mut">${new Date(v.expiresAt).toLocaleDateString()}</td>
+    <td><button class="primary" data-a="dlVideo" data-id="${esc(v.id)}" ${busy ? 'disabled' : ''}>⬇ Download</button> <button data-a="delVideo" data-id="${esc(v.id)}" ${busy ? 'disabled' : ''}>Delete</button></td></tr>`).join('');
+  return `<div class="card"><div class="row"><h2 style="margin:0">Your videos</h2><button data-a="refreshVideos" ${busy ? 'disabled' : ''}>↻ Refresh</button><button data-a="closeVideos">← Back</button></div>
+    <p class="mut">Finished videos are kept for ${videosRetention} days, even after you start a new project. Downloads come straight from cloud storage.</p>
+    ${rendering ? '<div class="msg info"><span class="spin"></span>A video is still rendering in your current project. It will appear here when it is finished — press Refresh.</div>' : ''}
+    ${videos === null ? '<div class="msg info">Loading…</div>' : videos.length ? `<table><tr><th>Video</th><th>Length</th><th>File</th><th>Keep until</th><th></th></tr>${rows}</table>` : '<div class="msg info">No finished videos yet.</div>'}</div>`;
+}
+const loadVideos = async () => { const r = await api('GET', '/api/videos'); videos = r.videos; videosRetention = r.retentionDays; };
+/** Download a stored file. The server answers with a short-lived direct link to cloud storage when it can (so the file does not pass through the web server). */
+async function downloadFile(path, filename) {
+  const res = await fetch(path + (path.includes('?') ? '&' : '?') + 'link=1', { headers: { 'x-user-email': email }, cache: 'no-store' });
+  if (!res.ok) { const j = await res.json().catch(() => ({})); throw Object.assign(new Error(j.error?.message || 'Download failed'), { status: res.status }); }
+  let href;
+  if ((res.headers.get('content-type') || '').includes('application/json')) { const j = await res.json(); href = j.url; }
+  else href = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a'); a.href = href; a.download = filename; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove();
+  if (href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(href), 10000);
+}
+
 // ---------- hydrate thumbnails (images need the email header, so fetch as blobs) ----------
 async function hydrateThumbs() {
   for (const el of document.querySelectorAll('img[data-img]')) {
@@ -184,7 +207,12 @@ document.addEventListener('click', (ev) => {
   const el = ev.target.closest('[data-a]'); if (!el) return;
   const a = el.dataset.a, n = Number(el.dataset.n), id = project?.id;
   const act = {
-    exit: () => { draft = email; email = ''; project = null; pending = {}; sessionStorage.removeItem('email'); show(); },
+    videos: () => run(async () => { await loadVideos(); showVideos = true; }),
+    closeVideos: () => { showVideos = false; show(); },
+    refreshVideos: () => run(loadVideos),
+    dlVideo: () => run(() => { const v = videos.find((x) => x.id === el.dataset.id); return downloadFile(`/api/videos/${v.id}/download`, `${v.title}_${new Date(v.createdAt).toISOString().slice(0, 10)}.mp4`); }),
+    delVideo: () => { if (confirm('Delete this video permanently?')) run(async () => { await api('DELETE', `/api/videos/${el.dataset.id}`); await loadVideos(); }); },
+    exit: () => { showVideos = false; videos = null; draft = email; email = ''; project = null; pending = {}; sessionStorage.removeItem('email'); show(); },
     back: () => run(async () => { const i = STAGES.findIndex(([k]) => k === project.stage); setProject((await api('POST', `/api/projects/${id}/stage`, { body: { stage: STAGES[Math.max(0, i - 1)][0] } })).project); }),
     identify: () => run(async () => {
       draft = $('#email').value.trim();          // kept so a failed attempt does not wipe what was typed
@@ -193,7 +221,7 @@ document.addEventListener('click', (ev) => {
       if (r.expired) notice = { t: 'warn', m: 'This task has expired. Please start a new upload.' };
     }),
     newproject: () => run(async () => setProject((await api('POST', '/api/projects', { body: {} })).project)),
-    newOther: () => run(async () => { setProject((await api('POST', '/api/projects', { body: { replace: true } })).project); pending = {}; }),
+    newOther: () => run(async () => { const rendering = project?.task?.videoRendering === 'pending'; setProject((await api('POST', '/api/projects', { body: { replace: true } })).project); pending = {}; if (rendering) notice = { t: 'ok', m: 'Your previous video keeps rendering in the background. When it finishes you will find it under “Videos” at the top.' }; }),
     uploadAudio: () => run(async () => {
       const f = $('#audioFile').files[0]; if (!f) throw new Error('Choose an audio file first.');
       const bar = $('#upbar'); bar.style.display = ''; pending.errShown = false;
@@ -223,10 +251,10 @@ document.addEventListener('click', (ev) => {
     resolve: () => run(async () => setProject((await api('POST', `/api/projects/${id}/sync/resolve`, { body: { kind: el.dataset.k, id: el.dataset.k === 'batch' ? Number(el.dataset.id) : el.dataset.id, wordIndex: Number(el.dataset.w) } })).project)),
     render: () => run(async () => setProject((await api('POST', `/api/projects/${id}/render`)).project)),
     retranscribe: () => { if (confirm('Transcribe the audio again? Synchronization will be redone afterwards (your batches and images are kept).')) run(async () => setProject((await api('POST', `/api/projects/${id}/transcribe?force=1`)).project)); },
-    dlBatchAudio: () => run(() => { const f = audioFmt || project.batchAudioFormat || 'mp3', stem = (project.batches.find((b) => b.number === n)?.filename || `batch_${n}`).replace(/\.[^.]+$/, ''); return saveBlob(`/api/projects/${id}/batches/${n}/audio?format=${f}`, `${stem}_audio.${f}`); }),
+    dlBatchAudio: () => run(() => { const f = audioFmt || project.batchAudioFormat || 'mp3', stem = (project.batches.find((b) => b.number === n)?.filename || `batch_${n}`).replace(/\.[^.]+$/, ''); return downloadFile(`/api/projects/${id}/batches/${n}/audio?format=${f}`, `${stem}_audio.${f}`); }),
     dlTranscript: () => run(() => saveBlob(`/api/projects/${id}/transcript-text`, 'transcript.txt')),
     dlTranscriptTs: () => run(() => saveBlob(`/api/projects/${id}/transcript-text?timestamps=1`, 'transcript_with_timestamps.txt')),
-    download: () => run(async () => { const b = await api('GET', `/api/projects/${id}/download`, { blob: true }); const u = URL.createObjectURL(b); const l = document.createElement('a'); l.href = u; l.download = 'video.mp4'; l.click(); setTimeout(() => URL.revokeObjectURL(u), 10000); }),
+    download: () => run(() => downloadFile(`/api/projects/${id}/download`, 'video.mp4')),
   }[a];
   act?.();
 });

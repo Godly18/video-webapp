@@ -81,7 +81,7 @@ test('rendering failure or failed R2 upload never yields finished; retry is poss
   } finally { await s.close(); }
   // upload to storage fails after a good ffmpeg run
   const base = await startApp({});
-  const flaky = { ...base.storage, putFile: async (k, ...a) => { if (k.includes('/outputs/')) throw new Error('R2 down'); return base.storage.putFile(k, ...a); }, putBuffer: (...a) => base.storage.putBuffer(...a), getBuffer: (...a) => base.storage.getBuffer(...a), downloadTo: (...a) => base.storage.downloadTo(...a), openStream: (...a) => base.storage.openStream(...a), exists: (...a) => base.storage.exists(...a), delete: (...a) => base.storage.delete(...a), deletePrefix: (...a) => base.storage.deletePrefix(...a) };
+  const flaky = { ...base.storage, putFile: async (k, ...a) => { if (k.includes('/videos/')) throw new Error('R2 down'); return base.storage.putFile(k, ...a); }, putBuffer: (...a) => base.storage.putBuffer(...a), getBuffer: (...a) => base.storage.getBuffer(...a), downloadTo: (...a) => base.storage.downloadTo(...a), openStream: (...a) => base.storage.openStream(...a), exists: (...a) => base.storage.exists(...a), delete: (...a) => base.storage.delete(...a), deletePrefix: (...a) => base.storage.deletePrefix(...a) };
   await base.close();
   const s2 = await startApp({ env: { JOB_MAX_ATTEMPTS: '1' }, storage: flaky });
   try {
@@ -127,10 +127,10 @@ test('EXPIRY: within 1h progress is restored without new jobs; after 1h it is no
     assert.equal(gone.json.expired, true); assert.equal(gone.json.project, null);
     assert.equal((await s.call('POST', '/api/internal/cleanup', {})).status, 403);
     const c = await s.call('POST', '/api/internal/cleanup', { headers: { 'x-cron-secret': 'secret' } });
-    assert.deepEqual(c.json, { cleaned: 1, skippedActive: 0, failed: 0 });
+    assert.deepEqual(c.json, { cleaned: 1, skippedActive: 0, failed: 0, videosDeleted: 0 });
     assert.deepEqual(await s.storage.listPrefix(prefix), []);
     assert.equal((await s.db.getProject(id)).state, 'cleaned');
-    assert.deepEqual(await s.cleanup(), { cleaned: 0, skippedActive: 0, failed: 0 }); // idempotent
+    assert.deepEqual(await s.cleanup(), { cleaned: 0, skippedActive: 0, failed: 0, videosDeleted: 0 }); // idempotent
     assert.equal((await s.call('POST', '/api/projects', { body: {} })).status, 201); // can start fresh
   } finally { await s.close(); }
 });
@@ -143,7 +143,7 @@ test('CLEANUP never deletes inputs of a live job and retries failed deletions', 
     await waitFor(async () => (await s.db.getProject(id)).taskMeta.audioDuration.jobStatus === 'running');
     await s.db.updateProject(id, () => ({ expiresAt: Date.now() - 1000 })); // force "expired" while the job is live
     const key = (await s.db.getProject(id)).audio.key;
-    assert.deepEqual(await s.cleanup(), { cleaned: 0, skippedActive: 1, failed: 0 });
+    assert.deepEqual(await s.cleanup(), { cleaned: 0, skippedActive: 1, failed: 0, videosDeleted: 0 });
     assert.ok(await s.storage.exists(key));
     release();
     await waitFor(async () => (await s.db.getProject(id)).task.audioDuration === 'finished');

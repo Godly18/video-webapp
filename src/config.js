@@ -76,6 +76,8 @@ export function loadConfig(env = process.env) {
       staleMs: num('REMOTE_STALE_MINUTES', 3) * 60_000,                  // a claimed job must show a runner heartbeat at least this often
       fallbackLocal: str('REMOTE_FALLBACK_LOCAL', '1') === '1', pollMs: 5000,
     },
+    videos: { retentionMs: num('VIDEO_RETENTION_DAYS', 7) * 86_400_000, maxPerUser: num('MAX_VIDEOS_PER_USER', 20) }, // the "Videos" library
+    downloads: { viaStorage: str('DOWNLOAD_VIA_STORAGE', '1') === '1', linkSeconds: num('DOWNLOAD_LINK_SECONDS', 600) }, // big files are served by R2 via short-lived links, not by this server
     batchAudioFormat: ['mp3', 'wav', 'm4a'].includes(str('BATCH_AUDIO_FORMAT', 'mp3')) ? str('BATCH_AUDIO_FORMAT', 'mp3') : 'mp3',
     healthGate: str('HEALTH_GATE', '1') === '1', // answer /health from a dedicated worker thread
     cleanupIntervalMs: num('CLEANUP_INTERVAL_SECONDS', 300) * 1000,

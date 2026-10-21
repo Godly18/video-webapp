@@ -7,7 +7,7 @@ const root = process.env.VERIFY_ROOT || path.resolve(import.meta.dirname, '..');
 const need = [
   'package.json', '.github/workflows/render-job.yml',
   ...['index', 'app', 'config', 'http', 'view', 'version', 'healthGate', 'remoteRunner'].map((f) => `src/${f}.js`),
-  ...['errors', 'email', 'time', 'patch', 'ids'].map((f) => `src/lib/${f}.js`),
+  ...['errors', 'email', 'time', 'patch', 'ids', 'sigv4'].map((f) => `src/lib/${f}.js`),
   ...['normalize', 'markers', 'imageMapping', 'matcher', 'duration', 'taskState', 'timeline', 'renderPlanner', 'batchAudio'].map((f) => `src/domain/${f}.js`),
   ...['memory', 'firestore'].map((f) => `src/db/${f}.js`), ...['local', 'r2'].map((f) => `src/storage/${f}.js`),
   ...['ffmpeg', 'gemini', 'sync', 'githubDispatch'].map((f) => `src/services/${f}.js`), ...['service', 'handlers', 'cleanup'].map((f) => `src/jobs/${f}.js`),

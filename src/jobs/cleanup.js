@@ -5,7 +5,7 @@
  */
 export async function cleanupExpired({ db, storage, jobs, now = Date.now, log = console }) {
   const t = now();
-  const out = { cleaned: 0, skippedActive: 0, failed: 0 };
+  const out = { cleaned: 0, skippedActive: 0, failed: 0, videosDeleted: 0 };
   for (const p of await db.listProjectsExpiredBefore(t)) {
     if (p.state === 'cleaned') continue;
     if ((await jobs.activeJobsFor(p.id)).length) { out.skippedActive++; continue; }
@@ -21,6 +21,11 @@ export async function cleanupExpired({ db, storage, jobs, now = Date.now, log = 
       log.error?.(JSON.stringify({ evt: 'cleanup_failed', projectId: p.id, message: String(e?.message).slice(0, 200) }));
       await db.updateProject(p.id, (cur) => ({ cleanupError: { at: t, message: 'cleanup will be retried' }, cleanupAttempts: (cur.cleanupAttempts || 0) + 1 })).catch(() => {});
     }
+  }
+  // Video library retention (independent of projects): delete the file first, then the record; failures are retried next sweep.
+  for (const v of await db.listVideosExpiredBefore(t)) {
+    try { await storage.delete(v.key); await db.deleteVideo(v.id); out.videosDeleted++; }
+    catch (e) { out.failed++; log.error?.(JSON.stringify({ evt: 'video_cleanup_failed', videoId: v.id, message: String(e?.message).slice(0, 200) })); }
   }
   return out;
 }

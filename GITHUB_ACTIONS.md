@@ -41,3 +41,16 @@ If GitHub cannot be reached, the token is wrong/expired, or no runner picks the 
 * **Output settings** (resolution, fps, fit, quality) are copied from the web service per job, so the video matches the settings on Render. Speed settings (threads, preset) are the workflow's own.
 * **Not covered:** the website, API, uploads, and downloads still run on Render. Only the heavy jobs move.
 * **Not yet exercised against real GitHub:** the logic is tested with an in-process stand-in for the runner and a fake GitHub endpoint; the real workflow has not been run.
+
+## Downloads do not use Render's bandwidth
+
+Finished videos (and per-batch audio) are downloaded **directly from Cloudflare R2** through a private, signed link that expires after 10 minutes
+(`DOWNLOAD_LINK_SECONDS`). The web service only creates the link; the file itself never passes through Render, and R2 does not charge for downloads.
+The bucket stays private, so nobody can browse or guess file addresses.
+(GitHub is not used for downloads on purpose: Actions artifacts need a GitHub login, and Releases on a public repo are visible to everyone.)
+If a link ever fails, set `DOWNLOAD_VIA_STORAGE=0` to stream through the web service again.
+
+## Videos library
+
+Every finished render is saved to the user's **Videos** list (button next to Exit), separate from the project, for `VIDEO_RETENTION_DAYS` days (default 7),
+up to `MAX_VIDEOS_PER_USER`. Starting a new project, or the one-hour project expiry, no longer removes a finished video.

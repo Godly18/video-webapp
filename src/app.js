@@ -72,6 +72,17 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     }
     return p;
   }
+  /** Send a stored file. With ?link=1 (and a storage provider that supports it) reply with a short-lived direct link so the bytes never pass through this server. */
+  async function sendFile(res, query, { key, type, filename }) {
+    if (!(await storage.exists(key))) throw new AppError(404, 'FILE_GONE', 'This file is no longer available.');
+    if (query.get('link') === '1' && cfg.downloads.viaStorage && storage.presignGet) {
+      const url = await storage.presignGet(key, { filename, contentType: type, expiresSeconds: cfg.downloads.linkSeconds });
+      return sendJson(res, 200, { mode: 'redirect', url, expiresInSeconds: cfg.downloads.linkSeconds });
+    }
+    const { stream, size } = await storage.openStream(key);
+    res.writeHead(200, { 'content-type': type, 'content-length': size, 'content-disposition': `attachment; filename="${filename}"`, 'cache-control': 'private, no-store' });
+    stream.pipe(res);
+  }
   const notPending = (p, ...types) => { for (const t of types) if (p.task[t] === 'pending') throw new AppError(409, 'TASK_IN_PROGRESS', 'Please wait for the current task to finish.'); };
   const sendView = async (res, userId, id, status = 200) => sendJson(res, status, { project: projectView(await db.getProject(id), cfg, now()) });
   const deleteKeys = (keys) => Promise.all(keys.filter(Boolean).map((k) => storage.delete(k).catch(() => {})));
@@ -149,7 +160,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
         });
       } catch (e) { await deleteKeys([key]); throw e; }
       if (!r.started) { await deleteKeys([key]); throw new AppError(409, 'TASK_IN_PROGRESS', 'A duration check is already running.'); }
-      await deleteKeys([p.audio?.key, p.transcript?.key, p.render?.key]);
+      await deleteKeys([p.audio?.key, p.transcript?.key]);
     });
     await sendView(res, auth.userId, p.id, 202);
   });
@@ -216,7 +227,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     await storage.putBuffer(key, buf, { contentType: 'text/plain; charset=utf-8' });
     const order = p.batchOrder.includes(number) ? p.batchOrder : [...p.batchOrder, number].sort((a, b) => a - b);
     await db.updateProject(p.id, () => ({ [`batches.b${number}`]: { number, filename, key, size: buf.length, uploadedAt: now(), wordCount: parsed.tokens.length, markers: parsed.markers.map((m) => m.number), endPhrase: parsed.tokens.slice(-8).join(' '), imagesConfirmed: false }, batchOrder: order, ...RESET_SYNC, ...(['review', 'export'].includes(p.stage) ? { stage: 'batches' } : {}) }));
-    await deleteKeys([p.batches[`b${number}`]?.key, p.render?.key]);
+    await deleteKeys([p.batches[`b${number}`]?.key]);
     await sendView(res, auth.userId, p.id, 201);
   });
   route('POST', '/api/projects/:id/batches/order', async ({ req, res, auth, params }) => {
@@ -224,7 +235,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     const order = (await readJson(req)).order;
     if (!Array.isArray(order) || order.length !== p.batchOrder.length || [...order].sort().join() !== [...p.batchOrder].sort().join()) throw new AppError(400, 'INVALID_ORDER', 'Order must list every uploaded batch number exactly once.');
     await db.updateProject(p.id, () => ({ batchOrder: order.map(Number), ...RESET_SYNC }));
-    await deleteKeys([p.render?.key]); await sendView(res, auth.userId, p.id);
+    await sendView(res, auth.userId, p.id);
   });
   route('DELETE', '/api/projects/:id/batches/:number', async ({ res, auth, params }) => {
     const p = await getProject(auth.userId, params.id); notPending(p, 'batchSynchronization', 'videoRendering');
@@ -233,7 +244,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     const patch = { batchOrder: p.batchOrder.filter((n) => n !== b.number), [`batches.b${b.number}`]: DELETE, ...RESET_SYNC };
     for (const i of imgs) patch[`images.${i.id}`] = DELETE;
     await db.updateProject(p.id, () => patch);
-    await deleteKeys([b.key, ...imgs.map((i) => i.key), p.render?.key]); await sendView(res, auth.userId, p.id);
+    await deleteKeys([b.key, ...imgs.map((i) => i.key)]); await sendView(res, auth.userId, p.id);
   });
 
   // Audio of ONE batch (cut from the original narration at the synchronised boundaries). Cached in R2 for the retention window; computed on first request.
@@ -258,10 +269,8 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
       }
       await cutting.get(key);
     }
-    const { stream, size } = await storage.openStream(key);
     const stem = safeFilename((p.batches[`b${n}`]?.filename || `batch_${n}`).replace(/\.[^.]+$/, ''), `batch_${n}`);
-    res.writeHead(200, { 'content-type': spec.type, 'content-length': size, 'content-disposition': `attachment; filename="${stem}_audio.${spec.ext}"`, 'cache-control': 'private, max-age=60' });
-    stream.pipe(res);
+    await sendFile(res, query, { key, type: spec.type, filename: `${stem}_audio.${spec.ext}` });
   });
 
   // ---------- Stage 3: images ----------
@@ -286,7 +295,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
       const patch = { [`images.${id}`]: { id, tag: tag.tag, batch: tag.batch, marker: tag.marker, filename: safeFilename(query.get('filename'), `${tag.tag}.${kind.ext}`), key, ext: kind.ext, contentType: kind.type, size, uploadedAt: now() }, [`batches.b${tag.batch}.imagesConfirmed`]: false, ...RESET_SYNC, ...(['review', 'export'].includes(p.stage) ? { stage: 'images' } : {}) };
       if (existing) patch[`images.${existing.id}`] = DELETE;
       await db.updateProject(p.id, () => patch);
-      await deleteKeys([existing?.key, p.render?.key]);
+      await deleteKeys([existing?.key]);
     });
     await sendView(res, auth.userId, p.id, 201);
   });
@@ -294,7 +303,7 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     const p = await getProject(auth.userId, params.id); notPending(p, 'batchSynchronization', 'videoRendering');
     const img = p.images[params.imageId]; if (!img) throw new AppError(404, 'IMAGE_NOT_FOUND', 'Image not found.');
     await db.updateProject(p.id, () => ({ [`images.${img.id}`]: DELETE, ...RESET_SYNC }));
-    await deleteKeys([img.key, p.render?.key]); await sendView(res, auth.userId, p.id);
+    await deleteKeys([img.key]); await sendView(res, auth.userId, p.id);
   });
   route('GET', '/api/projects/:id/images/:imageId/file', async ({ res, auth, params }) => {
     const p = await getProject(auth.userId, params.id); const img = p.images[params.imageId];
@@ -366,11 +375,26 @@ export function createApp({ cfg, db, storage, gemini, ff, now = Date.now, log = 
     await sendView(res, auth.userId, p.id, 202);
   });
   route('GET', '/api/projects/:id/render-status', async ({ res, auth, params }) => { const v = projectView(await getProject(auth.userId, params.id), cfg, now()); sendJson(res, 200, { task: v.task.videoRendering, meta: v.taskMeta.videoRendering, render: v.render }); });
-  route('GET', '/api/projects/:id/download', async ({ res, auth, params }) => {
+  route('GET', '/api/projects/:id/download', async ({ res, auth, params, query }) => {
     const p = await getProject(auth.userId, params.id);
     if (p.task.videoRendering !== 'finished' || !p.render?.key) throw new AppError(409, 'VIDEO_NOT_READY', 'The video is not ready yet.');
-    const { stream, size } = await storage.openStream(p.render.key);
-    res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': size, 'content-disposition': 'attachment; filename="video.mp4"' }); stream.pipe(res);
+    await sendFile(res, query, { key: p.render.key, type: 'video/mp4', filename: 'video.mp4' });
+  });
+  // ---------- Videos library: every finished render, kept for VIDEO_RETENTION_DAYS, independent of projects ----------
+  const videoView = (v) => ({ id: v.id, title: v.title, createdAt: v.createdAt, expiresAt: v.expiresAt, size: v.size, durationSeconds: v.durationSeconds, width: v.width, height: v.height, fps: v.fps });
+  const ownVideo = async (userId, id) => { const v = await db.getVideo(id); if (!v || v.userId !== userId || v.expiresAt <= now()) throw new AppError(404, 'VIDEO_NOT_FOUND', 'Video not found (it may have expired).'); return v; };
+  route('GET', '/api/videos', async ({ res, auth }) => {
+    const t = now();
+    sendJson(res, 200, { retentionDays: Math.round(cfg.videos.retentionMs / 86_400_000), videos: (await db.listVideosByUser(auth.userId)).filter((v) => v.expiresAt > t).sort((a, b) => b.createdAt - a.createdAt).map(videoView) });
+  });
+  route('GET', '/api/videos/:id/download', async ({ res, auth, params, query }) => {
+    const v = await ownVideo(auth.userId, params.id);
+    await sendFile(res, query, { key: v.key, type: 'video/mp4', filename: `${safeFilename(v.title, 'video')}_${new Date(v.createdAt).toISOString().slice(0, 10)}.mp4` });
+  });
+  route('DELETE', '/api/videos/:id', async ({ res, auth, params }) => {
+    const v = await ownVideo(auth.userId, params.id);
+    await storage.delete(v.key); await db.deleteVideo(v.id);
+    sendJson(res, 200, { deleted: true });
   });
   route('POST', '/api/internal/cleanup', async ({ req, res }) => {
     if (!cfg.cronSecret || req.headers['x-cron-secret'] !== cfg.cronSecret) throw new AppError(403, 'FORBIDDEN', 'Forbidden.');
