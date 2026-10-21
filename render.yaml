@@ -1,0 +1,20 @@
+# One web service only. No background worker.
+services:
+  - type: web
+    name: still-image-video-generator
+    runtime: docker
+    plan: free            # use a paid plan if renders exceed free-tier CPU/RAM
+    healthCheckPath: /health
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: DB_DRIVER, value: firestore }
+      - { key: STORAGE_DRIVER, value: r2 }
+      - { key: FIREBASE_PROJECT_ID, sync: false }
+      - { key: FIREBASE_SERVICE_ACCOUNT_JSON, sync: false }
+      - { key: CLOUDFLARE_ACCOUNT_ID, sync: false }
+      - { key: R2_BUCKET_NAME, sync: false }
+      - { key: R2_ACCESS_KEY_ID, sync: false }
+      - { key: R2_SECRET_ACCESS_KEY, sync: false }
+      - { key: GEMINI_API_KEY, sync: false }
+      - { key: GEMINI_TRANSCRIBE_MODEL, value: gemini-3.5-transcribe }
+      - { key: CRON_SECRET, generateValue: true }

@@ -1,0 +1,19 @@
+{
+  "name": "still-image-video-generator",
+  "version": "1.0.0",
+  "description": "Generates an MP4 from narration audio, text batches and tagged still images, synchronised with Gemini word-level timestamps.",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "verify": "node scripts/verify-install.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@google/genai": ">=1.0.0",
+    "firebase-admin": "^13.0.0"
+  }
+}
